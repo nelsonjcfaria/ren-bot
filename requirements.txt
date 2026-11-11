@@ -1,10 +1,4 @@
 pyTelegramBotAPI
 openai
 Flask
-
-cat
-cat > requirements.txt
-pyTelegramBotAPI
-openai
-Flask
 requests
