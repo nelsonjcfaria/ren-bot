@@ -77,4 +77,4 @@ def run_flask():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     print("Ren esta online...")
-    bot.infinity_polling(skip_pending=True)    ls
+    bot.infinity_polling(skip_pending=True)
