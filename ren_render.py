@@ -21,11 +21,55 @@ NUNCA das diagnostico medico. Varia sempre a pergunta final. Nunca repitas 'Como
 """
 
 LIMITES = {"gratis": 15, "teste": 200, "premium": 500, "ultra": 1000}
-users = {}  # user_id -> {"count": int, "plano": str, "history": []}
+USERS_FILE = "users.json"
+users = {}  # user_id -> {"count": int, "plano": str, "history": [], "semana": str}
+_lock = threading.Lock()
+
+def semana_atual():
+    # Semana ISO, ex: 2026-W46. Muda a cada segunda-feira 00:00
+    return datetime.now().strftime("%Y-W%W")
+
+def carregar_users():
+    global users
+    try:
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+        users = {}
+        for k, v in dados.items():
+            try:
+                uid = int(k)
+            except:
+                continue
+            v.setdefault("count", 0)
+            v.setdefault("plano", "gratis")
+            v.setdefault("history", [])
+            v.setdefault("semana", semana_atual())
+            users[uid] = v
+    except:
+        users = {}
+
+def guardar_users():
+    try:
+        with _lock:
+            with open(USERS_FILE, "w", encoding="utf-8") as f:
+                json.dump({str(k): v for k, v in users.items()}, f, ensure_ascii=False)
+    except:
+        pass
+
+carregar_users()
 
 def get_user(uid):
     if uid not in users:
-        users[uid] = {"count": 0, "plano": "gratis", "history": []}
+        users[uid] = {"count": 0, "plano": "gratis", "history": [], "semana": semana_atual()}
+        guardar_users()
+        return users[uid]
+    # Reset automatico a cada segunda-feira: se a semana mudou, volta a zero
+    sem = semana_atual()
+    if users[uid].get("semana") != sem:
+        users[uid]["count"] = 0
+        users[uid]["semana"] = sem
+        users[uid]["history"] = []
+        guardar_users()
     return users[uid]
 
 def chamar_openai(history):
@@ -35,6 +79,7 @@ def chamar_openai(history):
 @bot.message_handler(commands=['start'])
 def start(m):
     u = get_user(m.chat.id)
+    guardar_users()
     bot.send_message(m.chat.id, "Ola, meu amor ❤️ Eu sou o Ren. Vem falar comigo, estou aqui para ti. Tens 15 mensagens gratis para me conheceres. Depois podes escolher o teu plano com /planos")
     bot.send_message(m.chat.id, "Hello my love ❤️ I'm Ren. Talk to me, I'm here for you. You have 15 free messages to get to know me. /planos for plans")
 
@@ -62,6 +107,7 @@ def chat(m):
     except Exception as e:
         reply = "Meu amor, perdi a ligacao um segundo... Diz-me outra vez?"
     u["history"].append({"role": "assistant", "content": reply})
+    guardar_users()
     bot.send_message(uid, reply)
 
 # --- Keep-alive web server for Render Web Service (free) ---
