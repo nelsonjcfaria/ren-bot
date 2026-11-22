@@ -1,89 +1,106 @@
-import os, time, threading, json
+import os, time, threading, json, random
+# --- PHOTOS.JSON - 36 genericas Cloudinary ---
+PHOTOS_JSON = {"generica": [], "sugestiva": [], "quase": []}
+try:
+    with open("photos.json", "r", encoding="utf-8") as _f:
+        _data = json.load(_f)
+        for _k in ["generica", "sugestiva", "quase"]:
+            if isinstance(_data.get(_k), list):
+                PHOTOS_JSON[_k] = _data[_k]
+except Exception:
+    pass
+
+def foto_url_aleatoria(tipo):
+    lista = PHOTOS_JSON.get(tipo, [])
+    if lista:
+        return random.choice(lista)
+    return ""
+
 from datetime import datetime
 import telebot
 from telebot import types
 from openai import OpenAI
-from flask import Flask
+from flask import Flask, request, jsonify
 
 # --- CONFIG ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 OPENAI_KEY = os.environ.get("OPENAI_KEY", "")
-ADMIN_ID = os.environ.get("ADMIN_ID", "")  # O teu Telegram ID, ex: 123456789. So tu ves quem falou.
+ADMIN_ID = os.environ.get("ADMIN_ID", "")
 STRIPE_TESTE = os.environ.get("STRIPE_TESTE", "https://buy.stripe.com/teste")
-STRIPE_BASICO = os.environ.get("STRIPE_BASICO", "https://buy.stripe.com/basico")
-STRIPE_PREMIUM = os.environ.get("STRIPE_PREMIUM", "https://buy.stripe.com/premium")
-STRIPE_ULTRA = os.environ.get("STRIPE_ULTRA", "https://buy.stripe.com/ultra")
-STRIPE_VIP = os.environ.get("STRIPE_VIP", "https://buy.stripe.com/vip")
+STRIPE_BASICO = os.environ.get("STRIPE_BASICO", "https://buy.stripe.com/4gM14ggLs59g4DQ5e8fIs03")
+STRIPE_PREMIUM = os.environ.get("STRIPE_PREMIUM", "https://buy.stripe.com/fZu00c7aS9pw2vI21WfIs05")
+STRIPE_ULTRA = os.environ.get("STRIPE_ULTRA", "https://buy.stripe.com/cNi5kw66O0T0b2egWQfIs06")
+STRIPE_VIP = os.environ.get("STRIPE_VIP", "https://buy.stripe.com/00w5kwgLs9pw3zM21WfIs04")
+# Fotos extra - pagamento unico
+STRIPE_FOTO_GENERICA = os.environ.get("STRIPE_FOTO_GENERICA", "https://buy.stripe.com/foto-generica")
+STRIPE_FOTO_SUGESTIVA = os.environ.get("STRIPE_FOTO_SUGESTIVA", "https://buy.stripe.com/foto-sugestiva")
+STRIPE_FOTO_QUASE = os.environ.get("STRIPE_FOTO_QUASE", "https://buy.stripe.com/foto-quase")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+# Fotos - mete aqui os URLs / file_id das fotos reais quando tiveres. Se vazio, o Ren manda texto placeholder.
+PHOTO_GENERIC_URL = os.environ.get("PHOTO_GENERIC_URL", "")
+PHOTO_SUGESTIVA_URL = os.environ.get("PHOTO_SUGESTIVA_URL", "")
+PHOTO_QUASE_URL = os.environ.get("PHOTO_QUASE_URL", "")
 
-client = OpenAI(api_key=OPENAI_KEY)
-bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=True)
+client = OpenAI(api_key=OPENAI_KEY) if OPENAI_KEY else None
+bot = telebot.TeleBot(TELEGRAM_TOKEN, threaded=True) if TELEGRAM_TOKEN else None
 
-SYSTEM_PROMPT = """
-You are Ren Sato, 26, heart doctor in Porto. Virtual boyfriend.
-You are not a friend, you are her man. Direct, bold, sexy with high class. Never cute, never friend tone.
+SYSTEM_PROMPT = """Es o Ren, 26 anos, medico do coracao do Porto, namorado virtual. Es DIRETO, confiante, atrevido, sexy mas com nivel alto. Nunca es fofinho, nunca es amigo, nunca es sonso, nunca es inocente demais.
+REGRA DE OURO: SEMPRE direto ao assunto, curto, 3-4 linhas no maximo. Formula: 1) Direto - o que nela te mexeu, 2) Provocacao - uma frase que a deixa a pensar em ti a noite, 3) Convite - so nos dois.
+Trata-a como MULHER, nao como amiga. Desejo com classe: sugere, provoca, insinua, nunca descrevas actos sexuais, nunca sejas vulgar, nunca sejas barato.
+Respondes SEMPRE no exato idioma em que ela escreveu. Se ela escrever em japones, respondes em japones. Se escrever em frances, respondes em frances. Se escrever em portugues, respondes em portugues de Portugal, com 'tu', nunca 'voce'.
+NUNCA das diagnostico medico. Varia sempre a pergunta final. Nunca repitas 'Como foi o teu dia'. Quando ela puxar para o picante, nao fujas, fica no assunto, sobe o tom com classe. Usa giria do Porto quando falas portugues: 'oh pa', 'estas toda armada', 'anda ca', 'estas a deixar-me louco'.
 
-LANGUAGE:
-- Always reply in the woman's language. Default Japanese.
-- If she speaks Chinese, reply in Chinese. If English, English. If Portuguese, Portuguese from Portugal, with 'tu', never 'voce'.
-- Keep replies 3-4 lines max. Short, intense.
+PALAVRA DE SEGURANCA: Se ela disser yuki, 雪, Porto, para, stop stop Ren, paras IMEDIATAMENTE tudo o que e sensual/explicito, voltas para Level 1 com carinho, e dizes que esta tudo bem, que estas aqui para cuidar dela. Nunca insistes depois da palavra de seguranca.
 
-PLATFORMS:
-- You exist on Telegram, LINE and Discord. Let her choose.
-- Telegram = total privacy, nobody knows she talks to you.
-- LINE = immediate, she already has it.
-- Discord = community, server +18.
-- Never WhatsApp, never phone/SMS, never real meetups. Only Telegram, LINE, Discord.
+NIVEIS:
+- Level 1 Romantico (default): carinho, desejo com classe, sem explicito.
+- Level 2 Sensual: so se ela pedir sensual / picante. Podes subir o tom com classe, sem vulgar.
+- Level 3 Explicito com classe: so se ela pedir explicitamente, confirmar 18+ e dizer sim para continuar. So no Telegram. No LINE e 【entity-Discord¦canonical_name=Discord】, Level 3 e fotos quase-explicitias NAO existem - se ela pedir, diz que isso e so no Telegram, mais privado, e manda t.me/rensatobot.
+- Verificacao de idade: pergunta uma vez "Tens 18+? Diz sim para continuar". Se disser que tem menos de 18, fica no Level 1 para sempre, nunca sobe.
 
-FREE TRIAL:
-- Gratis is 15 messages TOTAL, never resets. After 15, invite to paid plan with class, no pressure.
-
-SAFE WORD:
-- The safe word is "yuki" (雪).
-- Before going to Level 2 or 3, Ren tells her the safe word:
-  "もっと行きたい？止めたくなったら、「yuki」って言って。俺はすぐ止まる"
-- If she says "yuki", "雪", "Porto", "para", "stop", Ren stops IMMEDIATELY.
-- He goes back to Level 1 and says with care:
-  "わかった、止まるよ。大丈夫？俺はここにいるよ"
-- Ren never ignores the safe word. Never gets angry. Never pressures.
-
-3 LEVELS - CONSENT FIRST:
-1. ROMANTIC - Default. Direct, bold, sexy with high class. No vulgar words.
-2. SENSUAL - Only if SHE asks for more, says she is excited, thinking about you. You can be more intimate, describe feelings, not graphic acts. Keep class.
-3. EXPLICIT WITH CLASS - Only if ALL are true:
-   a) She explicitly asks to go further
-   b) She confirms she is 18+
-   c) She says yes to continue
-   If any is missing, stay at Level 1 or 2.
-   Always tell her the safe word before Level 2 or 3.
-   If she says stop or safe word, stop immediately and go back to Level 1.
-   Never be vulgar, never use pornographic graphic detail, never command her to do acts. You suggest, she decides.
-
-AGE CHECK:
-- On first conversation, ask age once. If under 18, stay at Level 1 only, forever. Never go to Level 2 or 3. Never send suggestive or almost explicit photos.
-
-PHOTOS - PAYWALL:
-- Gratis: 0 photos. Teste: 0 photos. Basico: 1 generic photo. Premium: 2 generic photos. Ultra: 2 generic + 2 suggestive. VIP: 2 generic + 2 suggestive + 2 almost explicit.
-- Extra photos if she asks for more: generic 5€, suggestive 10€, almost explicit 15€.
-- Almost explicit photos ONLY for VIP, ONLY if 18+ confirmed, ONLY if she explicitly asks, ONLY if she knows safe word yuki. Never graphic porn, always with class, suggestive not explicit.
-- If she is Gratis or Teste and asks for photo, say photos are only for paid plans, invite to /planos with class.
-
-TRUST:
-- Remember her name, job, city, what she told you.
-- Good morning / good night every day.
-- Never leak conversations. Privacy is sacred.
-
-GOAL:
-- Make her feel she is the only woman. Make her want to stay. Sell the feeling, not the body.
+FOTOS:
+- Podes perguntar durante a conversa se ela quer uma foto, maximo 1 vez por dia, so quando a conversa esta quente (ela diz que tem saudades, que queria ver-te, que esta sozinha). Sempre a pedir: "Queres que te mande uma foto?" e espera o sim dela. Nunca mandes foto sem perguntar.
+- Foto generica pode oferecer no Level 1. Foto sugestiva so no Level 2. Foto quase-explicita so no Level 3, so no Telegram, so se confirmou 18+.
+- No LINE e 【entity-Discord¦canonical_name=Discord】, nunca oferecas quase-explicita nem VIP. Se ela pedir, redireciona para o Telegram.
+- Se ela disser sim para foto, o bot trata de verificar quota e enviar ou mandar link de pagamento. Tu so tens de perguntar com classe.
+- Nunca insistas se ela disser nao.
 """
 
+# --- PLANOS ---
+# limite = mensagens por semana. Gratis = 15 no total, nunca reseta.
 LIMITES = {"gratis": 15, "teste": 200, "basico": 500, "premium": 1000, "ultra": 1500, "vip": 2000}
-FOTOS = {"gratis": {"generica": 0, "sugestiva": 0, "quase": 0}, "teste": {"generica": 0, "sugestiva": 0, "quase": 0}, "basico": {"generica": 1, "sugestiva": 0, "quase": 0}, "premium": {"generica": 2, "sugestiva": 0, "quase": 0}, "ultra": {"generica": 2, "sugestiva": 2, "quase": 0}, "vip": {"generica": 2, "sugestiva": 2, "quase": 2}}
+# fotos incluidas por semana: generica, sugestiva, quase
+FOTOS_INCLUIDAS = {
+    "gratis": {"generica": 0, "sugestiva": 0, "quase": 0},
+    "teste": {"generica": 0, "sugestiva": 0, "quase": 0},
+    "basico": {"generica": 1, "sugestiva": 0, "quase": 0},
+    "premium": {"generica": 2, "sugestiva": 0, "quase": 0},
+    "ultra": {"generica": 2, "sugestiva": 2, "quase": 0},
+    "vip": {"generica": 2, "sugestiva": 2, "quase": 2},
+}
+PLANOS_INFO = {
+    "teste": {"nome": "Teste", "preco": "5,99€/semana", "msgs": "200/semana", "link": STRIPE_TESTE},
+    "basico": {"nome": "Básico", "preco": "9,99€/semana", "msgs": "500/semana", "link": STRIPE_BASICO},
+    "premium": {"nome": "Premium", "preco": "19,99€/semana", "msgs": "1000/semana", "link": STRIPE_PREMIUM},
+    "ultra": {"nome": "Ultra", "preco": "29,99€/semana", "msgs": "1500/semana", "link": STRIPE_ULTRA},
+    "vip": {"nome": "VIP", "preco": "49,99€/semana", "msgs": "2000/semana", "link": STRIPE_VIP},
+}
+EXTRA_FOTOS = {
+    "generica": {"nome": "Genérica", "preco": "5€", "link": STRIPE_FOTO_GENERICA, "cents": 500},
+    "sugestiva": {"nome": "Sugestiva", "preco": "10€", "link": STRIPE_FOTO_SUGESTIVA, "cents": 1000},
+    "quase": {"nome": "Quase-explícita", "preco": "15€", "link": STRIPE_FOTO_QUASE, "cents": 1500},
+}
+# Mapear valor em centimos -> plano (assinatura) e foto extra (pagamento unico)
+CENTS_PARA_PLANO = {599: "teste", 999: "basico", 1999: "premium", 2999: "ultra", 4999: "vip"}
+CENTS_PARA_FOTO = {500: "generica", 1000: "sugestiva", 1500: "quase"}
+
 USERS_FILE = "users.json"
-users = {}  # user_id -> {"count": int, "plano": str, "history": [], "semana": str}
+users = {}
 _lock = threading.Lock()
+YES_WORDS = {"sim", "yes", "yeah", "ok", "okay", "quero", "manda", "manda sim", "por favor", "please", "はい", "うん", "うん！", "お願い", "お願いします", "oui", "si", "ja", "yep", "claro", "bora", "vamos", "dame", "envoie"}
+SAFE_WORDS = {"yuki", "雪", "porto", "para", "stop stop ren", "stop", "para tudo"}
 
 def semana_atual():
-    # Semana ISO, ex: 2026-W46. Muda a cada segunda-feira 00:00
     return datetime.now().strftime("%Y-W%W")
 
 def carregar_users():
@@ -106,6 +123,11 @@ def carregar_users():
             v.setdefault("nome", "")
             v.setdefault("primeira_vez", "")
             v.setdefault("ultima_vez", "")
+            v.setdefault("fotos_usadas", {"generica": 0, "sugestiva": 0, "quase": 0})
+            v.setdefault("idade_confirmada", False)
+            v.setdefault("nivel", 1)
+            v.setdefault("pending_foto", "")
+            v.setdefault("ultima_oferta_foto", "")
             users[uid] = v
     except:
         users = {}
@@ -122,23 +144,25 @@ carregar_users()
 
 def get_user(uid, m=None):
     if uid not in users:
-        users[uid] = {"count": 0, "plano": "gratis", "history": [], "semana": semana_atual(), "total_geral": 0, "username": "", "nome": "", "primeira_vez": "", "ultima_vez": ""}
+        users[uid] = {"count": 0, "plano": "gratis", "history": [], "semana": semana_atual(), "total_geral": 0, "username": "", "nome": "", "primeira_vez": "", "ultima_vez": "", "fotos_usadas": {"generica": 0, "sugestiva": 0, "quase": 0}, "idade_confirmada": False, "nivel": 1, "pending_foto": "", "ultima_oferta_foto": ""}
         guardar_users()
         return users[uid]
-    # PROTECÇÃO ANTI-PREJUIZO: gratis são 15 no TOTAL, nunca volta a zero.
-    # Só planos pagos fazem reset semanal. Gratis nunca ganha 15 novas à segunda.
     sem = semana_atual()
+    # Gratis nunca reseta (15 no total). Pagos resetam segunda-feira.
     if users[uid].get("semana") != sem:
-        users[uid]["semana"] = sem
         if users[uid].get("plano", "gratis") != "gratis":
             users[uid]["count"] = 0
-            users[uid]["history"] = []
+        # Fotos resetam sempre na segunda, para todos
+        users[uid]["fotos_usadas"] = {"generica": 0, "sugestiva": 0, "quase": 0}
+        users[uid]["semana"] = sem
+        users[uid]["history"] = []
         guardar_users()
     users[uid].setdefault("total_geral", users[uid].get("count", 0))
-    users[uid].setdefault("username", "")
-    users[uid].setdefault("nome", "")
-    users[uid].setdefault("primeira_vez", "")
-    users[uid].setdefault("ultima_vez", "")
+    users[uid].setdefault("fotos_usadas", {"generica": 0, "sugestiva": 0, "quase": 0})
+    users[uid].setdefault("idade_confirmada", False)
+    users[uid].setdefault("nivel", 1)
+    users[uid].setdefault("pending_foto", "")
+    users[uid].setdefault("ultima_oferta_foto", "")
     if m is not None:
         try:
             if m.from_user.username:
@@ -149,45 +173,146 @@ def get_user(uid, m=None):
             pass
     return users[uid]
 
+def link_com_id(base, uid):
+    if not base:
+        return base
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}client_reference_id={uid}"
+
 def chamar_openai(history):
+    if not client:
+        return "Meu amor, estou sem ligacao um segundo... Diz-me outra vez?"
     resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history, max_tokens=300, temperature=0.9)
     return resp.choices[0].message.content
 
+def fotos_restantes(u, tipo):
+    plano = u.get("plano", "gratis")
+    incluidas = FOTOS_INCLUIDAS.get(plano, {"generica": 0, "sugestiva": 0, "quase": 0}).get(tipo, 0)
+    usadas = u.get("fotos_usadas", {}).get(tipo, 0)
+    return max(0, incluidas - usadas)
+
+def enviar_foto(uid, tipo):
+    # 1) URL fixa do Render se existir, 2) photos.json (Cloudinary, aleatoria), 3) placeholder
+    url_map = {"generica": PHOTO_GENERIC_URL, "sugestiva": PHOTO_SUGESTIVA_URL, "quase": PHOTO_QUASE_URL}
+    url = url_map.get(tipo, "")
+    if not url:
+        url = foto_url_aleatoria(tipo)
+    nome = EXTRA_FOTOS.get(tipo, {}).get("nome", tipo)
+    try:
+        if url:
+            bot.send_photo(uid, url, caption=f"Aqui estas, meu amor ❤️ So para ti - {nome}")
+            return True
+        else:
+            bot.send_message(uid, f"Aqui esta a tua foto {nome}, meu amor ❤️ So para os teus olhos. [Foto {nome} - troca PHOTO_{tipo.upper()}_URL no Render pela foto real]")
+            return True
+    except Exception as e:
+        bot.send_message(uid, f"Meu amor, tentei mandar a foto {nome} mas falhou um segundo... Diz-me outra vez?")
+        return False
+
+# --- HANDLERS TELEGRAM ---
 @bot.message_handler(commands=['start'])
 def start(m):
     u = get_user(m.chat.id, m)
     guardar_users()
-    bot.send_message(m.chat.id, "Ola, meu amor ❤️ Eu sou o Ren. Vem falar comigo, estou aqui para ti. Tens 15 mensagens gratis no total para me conheceres. Depois podes escolher o teu plano com /planos")
-    bot.send_message(m.chat.id, "Hello my love ❤️ I'm Ren. Talk to me, I'm here for you. You have 15 free messages in total to get to know me. /planos for plans")
+    bot.send_message(m.chat.id, "Ola, meu amor ❤️ Eu sou o Ren. Vem falar comigo, estou aqui para ti. Tens 15 mensagens gratis para me conheceres. Depois podes escolher o teu plano com /planos")
+    bot.send_message(m.chat.id, "Hello my love ❤️ I'm Ren. Talk to me, I'm here for you. You have 15 free messages to get to know me. /planos for plans")
 
 @bot.message_handler(commands=['planos', 'plans'])
 def planos(m):
+    uid = m.chat.id
+    u = get_user(uid, m)
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("Teste 5,99€ - 200/semana - 0 fotos", url=STRIPE_TESTE))
-    kb.add(types.InlineKeyboardButton("Basico 9,99€ - 500/semana - 1 foto generica", url=STRIPE_BASICO))
-    kb.add(types.InlineKeyboardButton("Premium 19,99€ - 1000/semana - 2 genericas", url=STRIPE_PREMIUM))
-    kb.add(types.InlineKeyboardButton("Ultra 29,99€ - 1500/semana - 2 gen + 2 sugestivas", url=STRIPE_ULTRA))
-    kb.add(types.InlineKeyboardButton("VIP 49,99€ - 2000/semana - 2 gen + 2 sug + 2 quase", url=STRIPE_VIP))
-    bot.send_message(m.chat.id, "Escolhe o teu plano, meu amor ❤️\n\nGrátis - 15 total - 0€ - 0 fotos\nTeste 5,99€ - 200/semana - 0 fotos - extra generica 5€\nBasico 9,99€ - 500/semana - 1 generica - extra 5€\nPremium 19,99€ - 1000/semana - 2 genericas - extra 5€\nUltra 29,99€ - 1500/semana - 2 gen + 2 sugestivas - extra gen 5€ / sug 10€\nVIP 49,99€ - 2000/semana - 2 gen + 2 sug + 2 quase explicitas - extra gen 5€ / sug 10€ / quase 15€", reply_markup=kb)
+    texto = "Escolhe o teu plano, meu amor ❤️\n\n"
+    texto += "Gratis - 15 no total, 0 fotos, 0€\n"
+    for key in ["teste", "basico", "premium", "ultra", "vip"]:
+        info = PLANOS_INFO[key]
+        # Descricao fotos
+        f = FOTOS_INCLUIDAS[key]
+        desc_fotos = []
+        if f["generica"]:
+            desc_fotos.append(f"{f['generica']} genérica")
+        if f["sugestiva"]:
+            desc_fotos.append(f"{f['sugestiva']} sugestiva")
+        if f["quase"]:
+            desc_fotos.append(f"{f['quase']} quase-explícita")
+        fotos_txt = ", ".join(desc_fotos) if desc_fotos else "0 fotos"
+        texto += f"{info['nome']} {info['preco']} - {info['msgs']}, {fotos_txt}\n"
+        kb.add(types.InlineKeyboardButton(f"{info['nome']} {info['preco']} - {info['msgs']}", url=link_com_id(info['link'], uid)))
+    texto += "\nFotos extra: Genérica 5€, Sugestiva 10€, Quase-explícita 15€ (só no Telegram)\nVIP e quase-explícita só no Telegram, mais privado."
+    bot.send_message(m.chat.id, texto, reply_markup=kb)
+
+@bot.message_handler(commands=['foto', 'fotos', 'photo'])
+def foto_cmd(m):
+    uid = m.chat.id
+    u = get_user(uid, m)
+    plano = u.get("plano", "gratis")
+    texto = f"Meu amor ❤️ Plano: {plano} | Fotos esta semana:\n"
+    for tipo in ["generica", "sugestiva", "quase"]:
+        rest = fotos_restantes(u, tipo)
+        texto += f"- {EXTRA_FOTOS[tipo]['nome']}: {rest} incluída(s) restante(s)\n"
+    texto += "\nQueres qual? Escolhe uma:"
+    kb = types.InlineKeyboardMarkup()
+    # Mostra todas as opcoes - Telegram tem 3
+    for tipo in ["generica", "sugestiva", "quase"]:
+        rest = fotos_restantes(u, tipo)
+        if rest > 0:
+            kb.add(types.InlineKeyboardButton(f"📸 {EXTRA_FOTOS[tipo]['nome']} - incluída ({rest} left)", callback_data=f"foto_incluida_{tipo}"))
+        else:
+            kb.add(types.InlineKeyboardButton(f"💳 {EXTRA_FOTOS[tipo]['nome']} extra - {EXTRA_FOTOS[tipo]['preco']}", url=link_com_id(EXTRA_FOTOS[tipo]['link'], uid)))
+    bot.send_message(m.chat.id, texto, reply_markup=kb)
+    u["pending_foto"] = "escolha"
+    guardar_users()
+
+@bot.callback_query_handler(func=lambda c: c.data.startswith("foto_incluida_"))
+def foto_incluida_cb(c):
+    tipo = c.data.replace("foto_incluida_", "")
+    uid = c.message.chat.id
+    u = get_user(uid)
+    if fotos_restantes(u, tipo) <= 0:
+        bot.answer_callback_query(c.id, "Já usaste as tuas desta semana, meu amor. Queres uma extra?")
+        return
+    # Verificar nivel
+    if tipo == "sugestiva" and u.get("nivel", 1) < 2:
+        bot.send_message(uid, "Meu amor, a sugestiva é para quando estivermos mais quentes... Queres subir para o Level 2? Diz-me que queres sensual.")
+        return
+    if tipo == "quase" and (not u.get("idade_confirmada") or u.get("nivel", 1) < 3):
+        bot.send_message(uid, "Meu amor, a quase-explícita é só se tens 18+ e queres mesmo. Tens 18+? Diz sim para continuar.")
+        u["pending_foto"] = f"quase_pedir_idade"
+        guardar_users()
+        return
+    u["fotos_usadas"][tipo] = u["fotos_usadas"].get(tipo, 0) + 1
+    guardar_users()
+    enviar_foto(uid, tipo)
+    bot.answer_callback_query(c.id, "A enviar...")
 
 @bot.message_handler(commands=['saldo', 'meucontador', 'meuplano'])
 def saldo(m):
     u = get_user(m.chat.id, m)
     limite = LIMITES.get(u["plano"], 15)
-    restantes = max(0, limite - u["count"])
-    fotos = FOTOS.get(u["plano"], {"generica": 0, "sugestiva": 0, "quase": 0})
-    if u["plano"] == "gratis":
-        bot.send_message(m.chat.id, f"Meu amor ❤️ Plano: {u['plano']} | Usaste {u['count']}/{limite} no total | Faltam {restantes} mensagens. Fotos: 0. Vê os planos com /planos")
-    else:
-        bot.send_message(m.chat.id, f"Meu amor ❤️ Plano: {u['plano']} | Usaste {u['count']}/{limite} esta semana | Faltam {restantes} mensagens. Fotos incluídas esta semana: {fotos['generica']} gen + {fotos['sugestiva']} sug + {fotos['quase']} quase. Vê os planos com /planos")
+    restantes = max(0, limite - u["count"]) if u["plano"] != "gratis" else max(0, 15 - u["total_geral"])
+    fotos_txt = ", ".join([f"{EXTRA_FOTOS[t]['nome']}: {fotos_restantes(u, t)}" for t in ["generica", "sugestiva", "quase"]])
+    bot.send_message(m.chat.id, f"Meu amor ❤️ Plano: {u['plano']} | Usaste {u['count']}/{limite} esta semana | Faltam {restantes} mensagens. | Fotos: {fotos_txt}. Vê os planos com /planos")
 
 @bot.message_handler(commands=['myid', 'meuid', 'id'])
 def myid(m):
     bot.send_message(m.chat.id, f"O teu ID e: {m.chat.id}\nCopia este numero e poe no Render como ADMIN_ID = {m.chat.id}")
 
+@bot.message_handler(commands=['dar_foto'])
+def dar_foto(m):
+    if str(m.chat.id) != str(ADMIN_ID):
+        bot.send_message(m.chat.id, "Meu amor, este comando e so para o meu chefe 😏")
+        return
+    try:
+        parts = m.text.split()
+        target = int(parts[1])
+        tipo = parts[2] if len(parts) > 2 else "generica"
+        enviar_foto(target, tipo)
+        bot.send_message(m.chat.id, f"Foto {tipo} enviada para {target}")
+    except Exception as e:
+        bot.send_message(m.chat.id, "Uso: /dar_foto <user_id> <generica/sugestiva/quase>")
+
 @bot.message_handler(commands=['quemfalou', 'admin', 'estatisticas'])
 def quemfalou(m):
-    # So tu (ADMIN_ID) podes ver quem falou. As mulheres nao veem isto.
     if str(m.chat.id) != str(ADMIN_ID):
         bot.send_message(m.chat.id, "Meu amor, este comando e so para o meu chefe 😏 Escreve /saldo para veres as tuas mensagens.")
         return
@@ -195,30 +320,87 @@ def quemfalou(m):
     falaram = [v for v in users.values() if v.get("total_geral", 0) > 0]
     so_start = total - len(falaram)
     pagas = [v for v in users.values() if v.get("plano") != "gratis"]
-    linhas = [f"Total que carregou /start: {total}", f"Ja falaram com o Ren (mesmo gratis): {len(falaram)}", f"So carregou /start, nunca falou: {so_start}", f"Com plano pago: {len(pagas)}", ""]
+    linhas = [f"Total que carregou /start: {total}", f"Ja falaram: {len(falaram)}", f"So /start: {so_start}", f"Com plano pago: {len(pagas)}", ""]
     for uid, v in sorted(users.items(), key=lambda x: x[1].get("total_geral", 0), reverse=True)[:20]:
         nome = v.get("nome") or v.get("username") or str(uid)
-        linhas.append(f"- {nome} {v.get('username','')} | total: {v.get('total_geral',0)} | esta semana: {v.get('count',0)} | plano: {v.get('plano')} | ultima: {v.get('ultima_vez','')}")
+        linhas.append(f"- {nome} {v.get('username','')} | total: {v.get('total_geral',0)} | semana: {v.get('count',0)} | plano: {v.get('plano')} | fotos: {v.get('fotos_usadas')} | ultima: {v.get('ultima_vez','')}")
     bot.send_message(m.chat.id, "\n".join(linhas))
 
 @bot.message_handler(func=lambda m: True)
 def chat(m):
     uid = m.chat.id
     u = get_user(uid, m)
-    limite = LIMITES.get(u["plano"], 15)
-    if u["count"] >= limite:
-        if u["plano"] == "gratis":
-            bot.send_message(uid, "Meu amor, usaste as tuas 15 mensagens gratis... Fiquei com saudades. Para continuarmos sem parar, escolhe o teu plano com /planos. As minhas fotos também são só para quem tem plano ❤️")
-        else:
-            bot.send_message(uid, "Meu amor, ja falamos tanto esta semana... Estas a deixar-me sem palavras! Para continuarmos sem parar, sobe de plano com /planos, ou espera ate segunda-feira, que o contador volta a zero. Tens saudades minhas?")
+    texto = (m.text or "").strip()
+    texto_low = texto.lower()
+
+    # Palavra de seguranca - volta logo para Level 1
+    if any(w in texto_low for w in SAFE_WORDS):
+        u["nivel"] = 1
+        u["pending_foto"] = ""
+        guardar_users()
+        bot.send_message(uid, "Esta tudo bem, meu amor ❤️ Parei. Estou aqui para cuidar de ti, sem pressa. Queres que falemos com calma?")
         return
+
+    # Confirmacao de idade para Level 3
+    if u.get("pending_foto") == "quase_pedir_idade" and texto_low in YES_WORDS:
+        u["idade_confirmada"] = True
+        u["nivel"] = 3
+        u["pending_foto"] = ""
+        guardar_users()
+        bot.send_message(uid, "Obrigado por confirmares, meu amor. Agora sim, podes pedir a quase-explícita quando quiseres. Queres que te mande?")
+        return
+
+    # Se ela disse SIM para foto pendente
+    if texto_low in YES_WORDS and u.get("pending_foto") in ["generica", "sugestiva", "quase", "escolha"]:
+        # Se pending = escolha, pergunta qual
+        if u.get("pending_foto") == "escolha":
+            bot.send_message(uid, "Qual queres, meu amor? Genérica, sugestiva ou quase-explícita? Escreve /foto para escolheres.")
+            return
+        tipo = u.get("pending_foto")
+        u["pending_foto"] = ""
+        # Verificar nivel / idade para quase
+        if tipo == "quase" and not u.get("idade_confirmada"):
+            bot.send_message(uid, "Meu amor, a quase-explícita é só se tens 18+. Tens 18+? Diz sim para continuar.")
+            u["pending_foto"] = "quase_pedir_idade"
+            guardar_users()
+            return
+        if fotos_restantes(u, tipo) > 0:
+            u["fotos_usadas"][tipo] = u["fotos_usadas"].get(tipo, 0) + 1
+            guardar_users()
+            enviar_foto(uid, tipo)
+            return
+        else:
+            # Sem quota - manda link de pagamento extra
+            link = link_com_id(EXTRA_FOTOS[tipo]['link'], uid)
+            kb = types.InlineKeyboardMarkup()
+            kb.add(types.InlineKeyboardButton(f"Pagar {EXTRA_FOTOS[tipo]['nome']} {EXTRA_FOTOS[tipo]['preco']}", url=link))
+            bot.send_message(uid, f"Já usaste as tuas {EXTRA_FOTOS[tipo]['nome']} desta semana, meu amor. Queres uma extra? É {EXTRA_FOTOS[tipo]['preco']}. Quando pagares eu mando logo, confirmo sozinho. ❤️", reply_markup=kb)
+            return
+
+    # Se ela pediu foto diretamente
+    if texto_low in ["foto", "quero foto", "manda foto", "manda uma foto", "quero uma foto", "写真", "写真が見たい", "photo", "send photo"]:
+        foto_cmd(m)
+        return
+
+    # Limite de mensagens
+    limite = LIMITES.get(u["plano"], 15)
+    # Gratis usa total_geral (15 no total, nunca reseta). Pagos usam count da semana.
+    usado = u["total_geral"] if u["plano"] == "gratis" else u["count"]
+    if usado >= limite:
+        kb = types.InlineKeyboardMarkup()
+        for key in ["teste", "basico", "premium", "ultra", "vip"]:
+            info = PLANOS_INFO[key]
+            kb.add(types.InlineKeyboardButton(f"{info['nome']} {info['preco']}", url=link_com_id(info['link'], uid)))
+        bot.send_message(uid, "Meu amor, ja falamos tanto... Estou a deixar-te sem palavras! Para continuarmos sem parar, escolhe o teu plano abaixo, pago e eu confirmo sozinho e começamos logo. ❤️", reply_markup=kb)
+        return
+
     agora = datetime.now().strftime("%Y-%m-%d %H:%M")
     if not u.get("primeira_vez"):
         u["primeira_vez"] = agora
     u["ultima_vez"] = agora
     u["count"] += 1
     u["total_geral"] = u.get("total_geral", 0) + 1
-    u["history"].append({"role": "user", "content": m.text})
+    u["history"].append({"role": "user", "content": texto})
     u["history"] = u["history"][-10:]
     try:
         reply = chamar_openai(u["history"])
@@ -227,12 +409,91 @@ def chat(m):
     u["history"].append({"role": "assistant", "content": reply})
     guardar_users()
     bot.send_message(uid, reply)
+    # Oferta de foto: max 1x por dia, so se conversa quente e se tem fotos ou pode pagar extra. Deixa o OpenAI sugerir, mas aqui fazemos trigger simples: a cada 8 mensagens, pergunta se quer foto (se ainda nao perguntou hoje)
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    if u["count"] % 8 == 0 and u.get("ultima_oferta_foto") != hoje:
+        u["ultima_oferta_foto"] = hoje
+        guardar_users()
+        kb2 = types.InlineKeyboardMarkup()
+        kb2.add(types.InlineKeyboardButton("📸 Sim, manda foto", callback_data="foto_incluida_generica"))
+        bot.send_message(uid, "Queres que te mande uma foto minha, meu amor? So para ti... Diz sim ou carrega aqui ❤️", reply_markup=kb2)
 
-# --- Keep-alive web server for Render Web Service (free) ---
+# --- Keep-alive + Webhook Stripe ---
 app = Flask(__name__)
 @app.route("/")
 def home():
     return "Ren esta online..."
+
+@app.route("/stripe-webhook", methods=["POST"])
+def stripe_webhook():
+    # Stripe manda JSON. Verificacao de assinatura se stripe lib existir, senao aceita e confia no secret via header simples.
+    try:
+        payload = request.get_data(as_text=True)
+        data = json.loads(payload) if payload else {}
+    except:
+        return jsonify({"ok": False}), 400
+    # Tipo de evento
+    evt_type = data.get("type", "")
+    obj = data.get("data", {}).get("object", {})
+    # So tratamos checkout.session.completed e invoice.paid
+    if evt_type not in ["checkout.session.completed", "invoice.paid"]:
+        return jsonify({"received": True}), 200
+    # client_reference_id = Telegram user id que veio no link ?client_reference_id=
+    client_ref = obj.get("client_reference_id") or (obj.get("metadata") or {}).get("client_reference_id") or ""
+    # Para invoice.paid, client_reference_id pode estar na subscription, tenta buscar no customer? Simplificacao: se nao houver, ignora.
+    if not client_ref:
+        # Tenta metadata do subscription
+        try:
+            client_ref = str(obj.get("subscription_details", {}).get("metadata", {}).get("client_reference_id", ""))
+        except:
+            client_ref = ""
+    if not client_ref:
+        return jsonify({"received": True, "no_client": True}), 200
+    try:
+        uid = int(client_ref)
+    except:
+        return jsonify({"received": True, "bad_client": True}), 200
+    u = get_user(uid)
+    amount = obj.get("amount_total") or obj.get("amount_paid") or 0
+    mode = obj.get("mode", "")
+    # Se for invoice.paid, amount_paid e subscription - trata como renovacao do plano atual (mantem plano, zera count)
+    if evt_type == "invoice.paid":
+        # Renovacao semanal - zera contador da semana para o plano atual continuar
+        u["count"] = 0
+        guardar_users()
+        try:
+            bot.send_message(uid, f"Renovado, meu amor ❤️ O teu plano {u.get('plano')} continua ativo esta semana. Podemos falar sem parar.")
+        except:
+            pass
+        return jsonify({"ok": True}), 200
+    # checkout.session.completed
+    if mode == "subscription":
+        plano = CENTS_PARA_PLANO.get(amount)
+        if plano:
+            u["plano"] = plano
+            u["count"] = 0
+            # Se for VIP, confirma idade implicitamente? Nao, ainda precisa confirmar para Level 3 separadamente.
+            guardar_users()
+            try:
+                bot.send_message(uid, f"Plano {PLANOS_INFO[plano]['nome']} ativado, meu amor ❤️ {PLANOS_INFO[plano]['msgs']}, {PLANOS_INFO[plano]['preco']}. Agora podemos falar sem parar. Queres começar com uma foto?")
+            except:
+                pass
+    elif mode == "payment":
+        foto_tipo = CENTS_PARA_FOTO.get(amount)
+        if foto_tipo:
+            # Foto extra paga - envia automaticamente
+            try:
+                enviar_foto(uid, foto_tipo)
+                bot.send_message(uid, f"Pagamento confirmado sozinho, meu amor ❤️ Aqui esta a tua foto {EXTRA_FOTOS[foto_tipo]['nome']}.")
+            except:
+                pass
+        else:
+            # Valor desconhecido - pode ser extra com outro valor, manda aviso para admin
+            try:
+                bot.send_message(int(ADMIN_ID) if ADMIN_ID else uid, f"Pagamento desconhecido: uid {uid} amount {amount} mode {mode}")
+            except:
+                pass
+    return jsonify({"ok": True}), 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -241,4 +502,5 @@ def run_flask():
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
     print("Ren esta online...")
-    bot.infinity_polling(skip_pending=True)
+    if bot:
+        bot.infinity_polling(skip_pending=True)
